@@ -4,108 +4,105 @@ import pandas as pd
 import os
 
 # 1. CONFIGURAÇÃO DA PÁGINA
-st.set_page_config(
-    page_title="De Olho na Câmara", 
-    page_icon="🔎", 
-    layout="wide"
-)
+st.set_page_config(page_title="De Olho na Câmara", page_icon="🔎", layout="wide")
 
-# Estilização básica para melhorar o visual
+# Estilização
 st.title("🔎 De Olho na Câmara")
-st.markdown("### Monitor de Gastos dos Deputados Federais (Dados Oficiais)")
-st.write("Fiscalização em tempo real das notas fiscais e reembolsos parlamentares.")
+st.markdown("### Monitor de Gastos dos Deputados Federais")
 
-# 2. FUNÇÕES DE PESQUISA (API DA CÂMARA)
+# 2. FUNÇÕES DE BUSCA (API)
 @st.cache_data 
 def buscar_todos_deputados():
-    """Puxa a lista de todos os 513 deputados federais."""
     url = "https://dadosabertos.camara.leg.br/api/v2/deputados"
-    resposta = requests.get(url).json()
-    return pd.DataFrame(resposta['dados'])
+    res = requests.get(url).json()
+    return pd.DataFrame(res['dados'])
 
 @st.cache_data(ttl=3600) 
 def buscar_despesas(id_deputado):
-    """Puxa os últimos 100 gastos registados pelo deputado."""
     url = f"https://dadosabertos.camara.leg.br/api/v2/deputados/{id_deputado}/despesas?ordem=DESC&ordenarPor=dataDocumento&itens=100"
-    resposta = requests.get(url).json()
-    if resposta['dados']:
-        return pd.DataFrame(resposta['dados'])
-    return pd.DataFrame()
+    res = requests.get(url).json()
+    return pd.DataFrame(res['dados']) if res['dados'] else pd.DataFrame()
 
-# 3. CARREGAMENTO DOS DADOS
-try:
-    df_deputados = buscar_todos_deputados()
-    # Cria uma coluna amigável para a busca
-    df_deputados['Busca'] = df_deputados['nome'] + " - " + df_deputados['siglaPartido'] + "/" + df_deputados['siglaUf']
-except Exception as e:
-    st.error(f"Erro ao conectar com a API da Câmara: {e}")
-    st.stop()
+# Carregamento Inicial
+df_deputados = buscar_todos_deputados()
+df_deputados['Busca'] = df_deputados['nome'] + " - " + df_deputados['siglaPartido'] + "/" + df_deputados['siglaUf']
 
-# 4. INTERFACE DE FILTROS
+# -------------------------------------------------------------------
+# 🚀 NOVA SEÇÃO: TOP 5 / FISCALIZAÇÃO EM DESTAQUE
+# -------------------------------------------------------------------
+st.subheader("🔥 Fiscalização em Destaque (Casos que chamam a atenção)")
+st.info("Clique nos botões abaixo para ver os gastos suspeitos encontrados pela nossa comunidade.")
+
+col_dest1, col_dest2, col_dest3 = st.columns(3)
+
+# Destaque 1: Acácio Favacho
+with col_dest1:
+    if st.button("🚨 Acácio Favacho (R$ 30k em 1 dia)"):
+        st.session_state.deputado_selecionado = "Acácio Favacho - MDB/AP"
+        st.session_state.uf_selecionada = "AP"
+
+# Destaque 2: General Girão
+with col_dest2:
+    if st.button("📱 General Girão (Marketing Sem Fim)"):
+        st.session_state.deputado_selecionado = "General Girão - PL/RN"
+        st.session_state.uf_selecionada = "RN"
+
+# Destaque 3: Gustavo Gayer
+with col_dest3:
+    if st.button("📍 Gustavo Gayer (Destaque Goiás)"):
+        st.session_state.deputado_selecionado = "Gustavo Gayer - PL/GO"
+        st.session_state.uf_selecionada = "GO"
+
+st.markdown("---")
+
+# -------------------------------------------------------------------
+# 3. INTERFACE DE BUSCA MANUAL
+# -------------------------------------------------------------------
 st.subheader("🕵️ Escolha o político para fiscalizar")
+
+# Gerenciamento de estado para os botões funcionarem
+if 'uf_selecionada' not in st.session_state: st.session_state.uf_selecionada = "Todos"
+if 'deputado_selecionado' not in st.session_state: st.session_state.deputado_selecionado = "Selecione..."
+
 col1, col2 = st.columns(2)
 
 with col1:
-    lista_estados = sorted(df_deputados['siglaUf'].unique())
-    estado_escolhido = st.selectbox("📍 Filtrar por Estado (UF):", ["Todos"] + list(lista_estados))
+    lista_ufs = ["Todos"] + sorted(list(df_deputados['siglaUf'].unique()))
+    uf = st.selectbox("📍 Filtrar por Estado (UF):", lista_ufs, 
+                      index=lista_ufs.index(st.session_state.uf_selecionada), key="uf_box")
+    st.session_state.uf_selecionada = uf
 
 with col2:
-    # Filtra a lista de nomes baseada no estado escolhido
-    df_filtrado = df_deputados
-    if estado_escolhido != "Todos":
-        df_filtrado = df_deputados[df_deputados['siglaUf'] == estado_escolhido]
+    df_filtrado = df_deputados if uf == "Todos" else df_deputados[df_deputados['siglaUf'] == uf]
+    lista_deps = ["Selecione..."] + list(df_filtrado['Busca'])
     
-    deputado_selecionado = st.selectbox("🔍 Nome do Político:", ["Selecione..."] + list(df_filtrado['Busca']))
-
-# 5. EXIBIÇÃO DOS GASTOS
-if deputado_selecionado != "Selecione...":
-    # Captura o ID do deputado escolhido
-    id_escolhido = df_deputados[df_deputados['Busca'] == deputado_selecionado]['id'].values[0]
-    
-    with st.spinner(f"A carregar as últimas 100 notas de {deputado_selecionado.split(' - ')[0]}..."):
-        df_despesas = buscar_despesas(id_escolhido)
+    # Verifica se o deputado do destaque está na lista filtrada
+    default_index = 0
+    if st.session_state.deputado_selecionado in lista_deps:
+        default_index = lista_deps.index(st.session_state.deputado_selecionado)
         
-        if not df_despesas.empty:
-            st.markdown("---")
-            st.subheader(f"💸 Gastos mais recentes")
+    dep = st.selectbox("🔍 Nome do Político:", lista_deps, index=default_index, key="dep_box")
+    st.session_state.deputado_selecionado = dep
 
-            # Tratamento da tabela para o utilizador
-            df_mostrar = df_despesas[['dataDocumento', 'tipoDespesa', 'nomeFornecedor', 'valorDocumento', 'urlDocumento']]
-            df_mostrar.columns = ['Data', 'Categoria', 'Fornecedor', 'Valor (R$)', 'Link da Nota']
-            
-            # Ordenar pelo valor mais alto no topo
-            df_mostrar = df_mostrar.sort_values(by='Valor (R$)', ascending=False)
-            
-            # Exibição da tabela interativa
-            st.dataframe(
-                df_mostrar, 
-                use_container_width=True,
-                column_config={
-                    "Link da Nota": st.column_config.LinkColumn("Ver Recibo Original")
-                }
-            )
-            st.info("💡 Dica: Clique no cabeçalho das colunas para ordenar por data ou valor.")
-        else:
-            st.warning("Nenhuma despesa declarada nos últimos meses.")
+# 4. EXIBIÇÃO DOS DADOS
+if st.session_state.deputado_selecionado != "Selecione...":
+    id_escolhido = df_deputados[df_deputados['Busca'] == st.session_state.deputado_selecionado]['id'].values[0]
+    df_despesas = buscar_despesas(id_escolhido)
+    
+    if not df_despesas.empty:
+        st.markdown(f"#### 💸 Últimas 100 notas de {st.session_state.deputado_selecionado}")
+        df_mostrar = df_despesas[['dataDocumento', 'tipoDespesa', 'nomeFornecedor', 'valorDocumento', 'urlDocumento']]
+        df_mostrar.columns = ['Data', 'Categoria', 'Fornecedor', 'Valor (R$)', 'Link']
+        st.dataframe(df_mostrar.sort_values(by='Valor (R$)', ascending=False), use_container_width=True)
+    else:
+        st.warning("Nenhuma despesa recente encontrada.")
 
-# 6. BARRA LATERAL (DOAÇÕES E PIX)
-st.sidebar.header("🚀 De Olho na Câmara")
-st.sidebar.write("Projeto independente focado em transparência pública.")
-st.sidebar.markdown("---")
-
-st.sidebar.subheader("💰 Apoie o Projeto")
-st.sidebar.write("As doações ajudam a manter o sistema online e a preparar a chegada do novo membro da família! 👶")
-
-# Lógica para mostrar o QR Code se o ficheiro existir
-caminho_imagem = "pix.jpeg"
-if os.path.exists(caminho_imagem):
-    st.sidebar.image(caminho_imagem, caption="Aponte a câmara do seu banco", use_container_width=True)
-else:
-    st.sidebar.warning("⚠️ QR Code (pix.jpeg) não encontrado na pasta.")
-
+# 5. BARRA LATERAL (APOIO)
+st.sidebar.header("🚀 Apoie o Projeto")
+st.sidebar.write("Ajude a manter a fiscalização e a preparar a chegada do bebê! 👶")
+if os.path.exists("pix.jpeg"):
+    st.sidebar.image("pix.jpeg", caption="Aponte a câmera do seu banco", use_container_width=True)
 st.sidebar.write("**Chave Pix (Copia e Cola):**")
-# Chave Pix atualizada
 st.sidebar.code("mzoiqcorp@gmail.com", language="text")
-
 st.sidebar.markdown("---")
-st.sidebar.caption("Dados extraídos diretamente da API da Câmara dos Deputados.")
+st.sidebar.caption("Dados Oficiais - API Câmara dos Deputados")
