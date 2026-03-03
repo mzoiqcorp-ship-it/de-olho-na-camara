@@ -4,93 +4,116 @@ import pandas as pd
 import os
 from datetime import datetime
 
-# 1. CONFIGURAÇÃO
+# 1. CONFIGURAÇÃO DA PÁGINA
 st.set_page_config(page_title="De Olho na Câmara", page_icon="🔎", layout="wide")
 
+# Estilização básica
 st.title("🔎 De Olho na Câmara")
-st.markdown("### Monitor Automático de Gastos Parlamentares")
+st.markdown("### O monitor de gastos oficial do cidadão brasileiro")
 
-# 2. LISTA DE "ALVOS" PARA O TOP 5 (Deputados que mais movimentam a cota)
-# Coloquei IDs conhecidos por gastar muito para o sistema ser rápido
+# 2. LISTA DE IDs DE DEPUTADOS PARA MONITORAMENTO DO TOP 5
+# Selecionamos 20 que costumam usar a cota de forma intensa para o ranking ser veloz
 LISTA_ALVOS = [
-    74328, 204528, 204507, 178887, 141450, 160511, 178957, 178901, 133439, 178881,
-    204554, 204421, 178996, 178927, 178937, 178882, 204507, 204454, 204465, 204471
+    178887, 204528, 74328, 204507, 141450, 160511, 178957, 178901, 133439, 178881,
+    204554, 204421, 178996, 178927, 178937, 178882, 204454, 204465, 204471, 178909
 ]
 
+# 3. FUNÇÕES DE DADOS (COM CACHE PARA VELOCIDADE)
 @st.cache_data(ttl=3600)
 def buscar_ranking_automatico():
     ranking = []
-    mes_atual = datetime.now().month
-    ano_atual = datetime.now().year
-    
-    # Busca o nome dos deputados da lista
+    agora = datetime.now()
+    # Lógica: Se for antes do dia 10, olhamos o mês anterior (dados mais completos)
+    if agora.day < 10:
+        if agora.month == 1:
+            mes_busca, ano_busca = 12, agora.year - 1
+        else:
+            mes_busca, ano_busca = agora.month - 1, agora.year
+    else:
+        mes_busca, ano_busca = agora.month, agora.year
+
+    # Busca nomes para o dicionário
     url_deps = "https://dadosabertos.camara.leg.br/api/v2/deputados"
-    all_deps = requests.get(url_deps).json()['dados']
-    dict_nomes = {d['id']: d['nome'] for d in all_deps if d['id'] in LISTA_ALVOS}
+    res_deps = requests.get(url_deps).json()['dados']
+    dict_nomes = {d['id']: d['nome'] for d in res_deps if d['id'] in LISTA_ALVOS}
 
     for id_dep in LISTA_ALVOS:
-        url = f"https://dadosabertos.camara.leg.br/api/v2/deputados/{id_dep}/despesas?ano={ano_atual}&mes={mes_atual}&ordem=DESC"
-        res = requests.get(url).json()
-        if res['dados']:
-            total = sum(d['valorDocumento'] for d in res['dados'])
-            ranking.append({"nome": dict_nomes.get(id_dep, "Desconhecido"), "total": total, "id": id_dep})
+        url = f"https://dadosabertos.camara.leg.br/api/v2/deputados/{id_dep}/despesas?ano={ano_busca}&mes={mes_busca}&ordem=DESC"
+        try:
+            res = requests.get(url).json()
+            if res['dados']:
+                total = sum(d['valorDocumento'] for d in res['dados'])
+                ranking.append({"nome": dict_nomes.get(id_dep, "Deputado"), "total": total, "id": id_dep, "mes": mes_busca})
+        except:
+            continue
     
     return sorted(ranking, key=lambda x: x['total'], reverse=True)[:5]
 
-# 3. INTERFACE DO TOP 5 AUTOMÁTICO
-st.subheader(f"🔥 Top 5 Maiores Gastos de {datetime.now().strftime('%B/%Y')}")
-st.caption("Valores somados automaticamente do mês atual.")
+@st.cache_data
+def get_lista_completa():
+    url = "https://dadosabertos.camara.leg.br/api/v2/deputados"
+    df = pd.DataFrame(requests.get(url).json()['dados'])
+    df['Busca'] = df['nome'] + " - " + df['siglaPartido'] + "/" + df['siglaUf']
+    return df
 
-with st.spinner("Calculando ranking em tempo real..."):
+# 4. EXIBIÇÃO DO TOP 5 (DASHBOARD)
+st.subheader("🔥 Top 5 Maiores Gastos (Mês de Referência)")
+
+with st.spinner("Minerando dados da Câmara..."):
     top_5 = buscar_ranking_automatico()
 
 if top_5:
+    mes_ref = top_5[0]['mes']
+    st.caption(f"Dados consolidados referentes ao mês {mes_ref}/2026")
     cols = st.columns(5)
     for i, dep_top in enumerate(top_5):
         with cols[i]:
             st.metric(label=dep_top['nome'], value=f"R$ {dep_top['total']:,.2f}")
-            if st.button(f"Ver Detalhes", key=f"btn_{dep_top['id']}"):
-                st.session_state.dep_id = dep_top['id']
-                st.session_state.dep_nome = dep_top['nome']
+            if st.button(f"🔎 Fiscalizar", key=f"btn_{dep_top['id']}"):
+                st.session_state.id_manual = dep_top['id']
+                st.session_state.nome_manual = dep_top['nome']
 
 st.markdown("---")
 
-# 4. BUSCA MANUAL (Sua ferramenta original)
-st.subheader("🕵️ Busca Manual por Estado")
-
-@st.cache_data
-def get_all_deps():
-    url = "https://dadosabertos.camara.leg.br/api/v2/deputados"
-    return pd.DataFrame(requests.get(url).json()['dados'])
-
-df_all = get_all_deps()
-df_all['Busca'] = df_all['nome'] + " - " + df_all['siglaPartido'] + "/" + df_all['siglaUf']
+# 5. BUSCA MANUAL POR ESTADO
+st.subheader("🕵️ Busca Detalhada por Político")
+df_all = get_lista_completa()
 
 col1, col2 = st.columns(2)
 with col1:
-    uf = st.selectbox("Estado:", ["Todos"] + sorted(list(df_all['siglaUf'].unique())))
+    lista_ufs = ["Todos"] + sorted(list(df_all['siglaUf'].unique()))
+    uf_sel = st.selectbox("Filtrar por Estado:", lista_ufs)
+
 with col2:
-    lista_final = df_all if uf == "Todos" else df_all[df_all['siglaUf'] == uf]
-    selecionado = st.selectbox("Político:", ["Selecione..."] + list(lista_final['Busca']))
+    df_filtrado = df_all if uf_sel == "Todos" else df_all[df_all['siglaUf'] == uf_sel]
+    lista_deps = ["Selecione..."] + list(df_filtrado['Busca'])
+    dep_sel = st.selectbox("Escolha o Deputado:", lista_deps)
 
-# 5. MOSTRAR TABELA
-dep_id_final = None
-if selecionado != "Selecione...":
-    dep_id_final = df_all[df_all['Busca'] == selecionado]['id'].values[0]
-elif 'dep_id' in st.session_state:
-    dep_id_final = st.session_state.dep_id
+# 6. MOSTRAR TABELA DE GASTOS
+id_final = None
+if dep_sel != "Selecione...":
+    id_final = df_all[df_all['Busca'] == dep_sel]['id'].values[0]
+elif 'id_manual' in st.session_state:
+    id_final = st.session_state.id_manual
 
-if dep_id_final:
-    url_despesas = f"https://dadosabertos.camara.leg.br/api/v2/deputados/{dep_id_final}/despesas?ordem=DESC&itens=100"
-    res_d = requests.get(url_despesas).json()
-    if res_d['dados']:
-        df_d = pd.DataFrame(res_d['dados'])[['dataDocumento', 'tipoDespesa', 'nomeFornecedor', 'valorDocumento', 'urlDocumento']]
-        df_d.columns = ['Data', 'Tipo', 'Fornecedor', 'Valor (R$)', 'Nota Fiscal']
-        st.dataframe(df_d.sort_values(by="Valor (R$)", ascending=False), use_container_width=True)
+if id_final:
+    url_final = f"https://dadosabertos.camara.leg.br/api/v2/deputados/{id_final}/despesas?ordem=DESC&itens=100"
+    dados_finais = requests.get(url_final).json()['dados']
+    
+    if dados_finais:
+        df_f = pd.DataFrame(dados_finais)[['dataDocumento', 'tipoDespesa', 'nomeFornecedor', 'valorDocumento', 'urlDocumento']]
+        df_f.columns = ['Data', 'Tipo de Gasto', 'Fornecedor', 'Valor (R$)', 'Link da Nota']
+        st.write(f"### Exibindo últimas notas fiscais")
+        st.dataframe(df_f.sort_values(by="Valor (R$)", ascending=False), use_container_width=True)
+    else:
+        st.info("Nenhum dado de despesa encontrado para este parlamentar.")
 
-# BARRA LATERAL
-st.sidebar.header("🚀 Apoie o Projeto")
-st.sidebar.write("Ajude a manter a fiscalização e a preparar a chegada do bebê! 👶")
+# 7. BARRA LATERAL (APOIO)
+st.sidebar.header("🚀 Apoie o Monitor")
+st.sidebar.write("Ajude um desenvolvedor independente de Goiânia a manter este servidor e preparar o enxoval do bebê! 👶")
 if os.path.exists("pix.jpeg"):
     st.sidebar.image("pix.jpeg", use_container_width=True)
+st.sidebar.write("**Chave Pix:**")
 st.sidebar.code("mzoiqcorp@gmail.com", language="text")
+st.sidebar.markdown("---")
+st.sidebar.caption("v2.0 - Dados Abertos Câmara")
