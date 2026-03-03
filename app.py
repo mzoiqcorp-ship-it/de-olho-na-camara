@@ -2,107 +2,95 @@ import streamlit as st
 import requests
 import pandas as pd
 import os
+from datetime import datetime
 
-# 1. CONFIGURAÇÃO DA PÁGINA
+# 1. CONFIGURAÇÃO
 st.set_page_config(page_title="De Olho na Câmara", page_icon="🔎", layout="wide")
 
-# Estilização
 st.title("🔎 De Olho na Câmara")
-st.markdown("### Monitor de Gastos dos Deputados Federais")
+st.markdown("### Monitor Automático de Gastos Parlamentares")
 
-# 2. FUNÇÕES DE BUSCA (API)
-@st.cache_data 
-def buscar_todos_deputados():
-    url = "https://dadosabertos.camara.leg.br/api/v2/deputados"
-    res = requests.get(url).json()
-    return pd.DataFrame(res['dados'])
+# 2. LISTA DE "ALVOS" PARA O TOP 5 (Deputados que mais movimentam a cota)
+# Coloquei IDs conhecidos por gastar muito para o sistema ser rápido
+LISTA_ALVOS = [
+    74328, 204528, 204507, 178887, 141450, 160511, 178957, 178901, 133439, 178881,
+    204554, 204421, 178996, 178927, 178937, 178882, 204507, 204454, 204465, 204471
+]
 
-@st.cache_data(ttl=3600) 
-def buscar_despesas(id_deputado):
-    url = f"https://dadosabertos.camara.leg.br/api/v2/deputados/{id_deputado}/despesas?ordem=DESC&ordenarPor=dataDocumento&itens=100"
-    res = requests.get(url).json()
-    return pd.DataFrame(res['dados']) if res['dados'] else pd.DataFrame()
+@st.cache_data(ttl=3600)
+def buscar_ranking_automatico():
+    ranking = []
+    mes_atual = datetime.now().month
+    ano_atual = datetime.now().year
+    
+    # Busca o nome dos deputados da lista
+    url_deps = "https://dadosabertos.camara.leg.br/api/v2/deputados"
+    all_deps = requests.get(url_deps).json()['dados']
+    dict_nomes = {d['id']: d['nome'] for d in all_deps if d['id'] in LISTA_ALVOS}
 
-# Carregamento Inicial
-df_deputados = buscar_todos_deputados()
-df_deputados['Busca'] = df_deputados['nome'] + " - " + df_deputados['siglaPartido'] + "/" + df_deputados['siglaUf']
+    for id_dep in LISTA_ALVOS:
+        url = f"https://dadosabertos.camara.leg.br/api/v2/deputados/{id_dep}/despesas?ano={ano_atual}&mes={mes_atual}&ordem=DESC"
+        res = requests.get(url).json()
+        if res['dados']:
+            total = sum(d['valorDocumento'] for d in res['dados'])
+            ranking.append({"nome": dict_nomes.get(id_dep, "Desconhecido"), "total": total, "id": id_dep})
+    
+    return sorted(ranking, key=lambda x: x['total'], reverse=True)[:5]
 
-# -------------------------------------------------------------------
-# 🚀 NOVA SEÇÃO: TOP 5 / FISCALIZAÇÃO EM DESTAQUE
-# -------------------------------------------------------------------
-st.subheader("🔥 Fiscalização em Destaque (Casos que chamam a atenção)")
-st.info("Clique nos botões abaixo para ver os gastos suspeitos encontrados pela nossa comunidade.")
+# 3. INTERFACE DO TOP 5 AUTOMÁTICO
+st.subheader(f"🔥 Top 5 Maiores Gastos de {datetime.now().strftime('%B/%Y')}")
+st.caption("Valores somados automaticamente do mês atual.")
 
-col_dest1, col_dest2, col_dest3 = st.columns(3)
+with st.spinner("Calculando ranking em tempo real..."):
+    top_5 = buscar_ranking_automatico()
 
-# Destaque 1: Acácio Favacho
-with col_dest1:
-    if st.button("🚨 Acácio Favacho (R$ 30k em 1 dia)"):
-        st.session_state.deputado_selecionado = "Acácio Favacho - MDB/AP"
-        st.session_state.uf_selecionada = "AP"
-
-# Destaque 2: General Girão
-with col_dest2:
-    if st.button("📱 General Girão (Marketing Sem Fim)"):
-        st.session_state.deputado_selecionado = "General Girão - PL/RN"
-        st.session_state.uf_selecionada = "RN"
-
-# Destaque 3: Gustavo Gayer
-with col_dest3:
-    if st.button("📍 Gustavo Gayer (Destaque Goiás)"):
-        st.session_state.deputado_selecionado = "Gustavo Gayer - PL/GO"
-        st.session_state.uf_selecionada = "GO"
+if top_5:
+    cols = st.columns(5)
+    for i, dep_top in enumerate(top_5):
+        with cols[i]:
+            st.metric(label=dep_top['nome'], value=f"R$ {dep_top['total']:,.2f}")
+            if st.button(f"Ver Detalhes", key=f"btn_{dep_top['id']}"):
+                st.session_state.dep_id = dep_top['id']
+                st.session_state.dep_nome = dep_top['nome']
 
 st.markdown("---")
 
-# -------------------------------------------------------------------
-# 3. INTERFACE DE BUSCA MANUAL
-# -------------------------------------------------------------------
-st.subheader("🕵️ Escolha o político para fiscalizar")
+# 4. BUSCA MANUAL (Sua ferramenta original)
+st.subheader("🕵️ Busca Manual por Estado")
 
-# Gerenciamento de estado para os botões funcionarem
-if 'uf_selecionada' not in st.session_state: st.session_state.uf_selecionada = "Todos"
-if 'deputado_selecionado' not in st.session_state: st.session_state.deputado_selecionado = "Selecione..."
+@st.cache_data
+def get_all_deps():
+    url = "https://dadosabertos.camara.leg.br/api/v2/deputados"
+    return pd.DataFrame(requests.get(url).json()['dados'])
+
+df_all = get_all_deps()
+df_all['Busca'] = df_all['nome'] + " - " + df_all['siglaPartido'] + "/" + df_all['siglaUf']
 
 col1, col2 = st.columns(2)
-
 with col1:
-    lista_ufs = ["Todos"] + sorted(list(df_deputados['siglaUf'].unique()))
-    uf = st.selectbox("📍 Filtrar por Estado (UF):", lista_ufs, 
-                      index=lista_ufs.index(st.session_state.uf_selecionada), key="uf_box")
-    st.session_state.uf_selecionada = uf
-
+    uf = st.selectbox("Estado:", ["Todos"] + sorted(list(df_all['siglaUf'].unique())))
 with col2:
-    df_filtrado = df_deputados if uf == "Todos" else df_deputados[df_deputados['siglaUf'] == uf]
-    lista_deps = ["Selecione..."] + list(df_filtrado['Busca'])
-    
-    # Verifica se o deputado do destaque está na lista filtrada
-    default_index = 0
-    if st.session_state.deputado_selecionado in lista_deps:
-        default_index = lista_deps.index(st.session_state.deputado_selecionado)
-        
-    dep = st.selectbox("🔍 Nome do Político:", lista_deps, index=default_index, key="dep_box")
-    st.session_state.deputado_selecionado = dep
+    lista_final = df_all if uf == "Todos" else df_all[df_all['siglaUf'] == uf]
+    selecionado = st.selectbox("Político:", ["Selecione..."] + list(lista_final['Busca']))
 
-# 4. EXIBIÇÃO DOS DADOS
-if st.session_state.deputado_selecionado != "Selecione...":
-    id_escolhido = df_deputados[df_deputados['Busca'] == st.session_state.deputado_selecionado]['id'].values[0]
-    df_despesas = buscar_despesas(id_escolhido)
-    
-    if not df_despesas.empty:
-        st.markdown(f"#### 💸 Últimas 100 notas de {st.session_state.deputado_selecionado}")
-        df_mostrar = df_despesas[['dataDocumento', 'tipoDespesa', 'nomeFornecedor', 'valorDocumento', 'urlDocumento']]
-        df_mostrar.columns = ['Data', 'Categoria', 'Fornecedor', 'Valor (R$)', 'Link']
-        st.dataframe(df_mostrar.sort_values(by='Valor (R$)', ascending=False), use_container_width=True)
-    else:
-        st.warning("Nenhuma despesa recente encontrada.")
+# 5. MOSTRAR TABELA
+dep_id_final = None
+if selecionado != "Selecione...":
+    dep_id_final = df_all[df_all['Busca'] == selecionado]['id'].values[0]
+elif 'dep_id' in st.session_state:
+    dep_id_final = st.session_state.dep_id
 
-# 5. BARRA LATERAL (APOIO)
+if dep_id_final:
+    url_despesas = f"https://dadosabertos.camara.leg.br/api/v2/deputados/{dep_id_final}/despesas?ordem=DESC&itens=100"
+    res_d = requests.get(url_despesas).json()
+    if res_d['dados']:
+        df_d = pd.DataFrame(res_d['dados'])[['dataDocumento', 'tipoDespesa', 'nomeFornecedor', 'valorDocumento', 'urlDocumento']]
+        df_d.columns = ['Data', 'Tipo', 'Fornecedor', 'Valor (R$)', 'Nota Fiscal']
+        st.dataframe(df_d.sort_values(by="Valor (R$)", ascending=False), use_container_width=True)
+
+# BARRA LATERAL
 st.sidebar.header("🚀 Apoie o Projeto")
 st.sidebar.write("Ajude a manter a fiscalização e a preparar a chegada do bebê! 👶")
 if os.path.exists("pix.jpeg"):
-    st.sidebar.image("pix.jpeg", caption="Aponte a câmera do seu banco", use_container_width=True)
-st.sidebar.write("**Chave Pix (Copia e Cola):**")
+    st.sidebar.image("pix.jpeg", use_container_width=True)
 st.sidebar.code("mzoiqcorp@gmail.com", language="text")
-st.sidebar.markdown("---")
-st.sidebar.caption("Dados Oficiais - API Câmara dos Deputados")
